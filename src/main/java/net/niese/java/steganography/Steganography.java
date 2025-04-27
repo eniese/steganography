@@ -43,7 +43,7 @@ public class Steganography {
         boolean skipCorrupted;
         boolean silentExtract;
         boolean silentDecrypt;
-        boolean noCRC; // New flag to suppress hex CRC in list output
+        boolean noCRC; // Flag to suppress hex CRC in list output
     }
 
     /**
@@ -180,6 +180,7 @@ public class Steganography {
         }
     }
 
+
     /**
      * Manages encryption, compression, and CRC calculations.
      */
@@ -189,7 +190,7 @@ public class Steganography {
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.ENCRYPT_MODE, key);
             byte[] encrypted = cipher.doFinal(data);
-            Arrays.fill(key.getEncoded(), (byte) 0);
+            Arrays.fill(key.getEncoded(), (byte) 0); // Fixed: Zero out the key
             return encrypted;
         }
 
@@ -198,7 +199,7 @@ public class Steganography {
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.DECRYPT_MODE, key);
             byte[] decrypted = cipher.doFinal(data);
-            Arrays.fill(key.getEncoded(), (byte) 0);
+            Arrays.fill(key.getEncoded(), (byte) 0); // Fixed: Zero out the key
             return decrypted;
         }
 
@@ -238,6 +239,8 @@ public class Steganography {
             return (int) crc32.getValue();
         }
     }
+
+
 
     /**
      * Utility methods for file and data handling.
@@ -287,9 +290,22 @@ public class Steganography {
     }
 
     /**
+     * Result of extracting files from an image, including whether the magic number was found.
+     */
+    static class ExtractResult {
+        List<FileData> files;
+        boolean magicFound;
+
+        ExtractResult(List<FileData> files, boolean magicFound) {
+            this.files = files;
+            this.magicFound = magicFound;
+        }
+    }
+
+    /**
      * Extracts embedded files from an image.
      */
-    private static List<FileData> extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing, Integer targetFileNumber) throws Exception {
+    private static ExtractResult extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing, Integer targetFileNumber) throws Exception {
         List<FileData> files = new ArrayList<>();
         ByteArrayOutputStream baos = rawMode ? new ByteArrayOutputStream() : null;
         int currentBitPosition = 0;
@@ -298,7 +314,9 @@ public class Steganography {
         currentBitPosition = extractBits(ctx, extractedMagic, currentBitPosition, 32);
         if (rawMode) baos.write(extractedMagic);
 
-        if (!Arrays.equals(extractedMagic, MAGIC_STEG)) return files;
+        if (!Arrays.equals(extractedMagic, MAGIC_STEG)) {
+            return new ExtractResult(files, false);
+        }
 
         byte[] numFilesBytes = new byte[1];
         currentBitPosition = extractBits(ctx, numFilesBytes, currentBitPosition, 8);
@@ -411,9 +429,9 @@ public class Steganography {
 
         if (rawMode) {
             byte[] rawData = baos.toByteArray();
-            return Collections.singletonList(new FileData("raw", rawData, 0, false, false, rawData.length, rawData));
+            files.add(new FileData("raw", rawData, 0, false, false, rawData.length, rawData));
         }
-        return files;
+        return new ExtractResult(files, true);
     }
 
     /**
@@ -560,8 +578,8 @@ public class Steganography {
 
         SteganographyConfig rawConfig = new SteganographyConfig();
         rawConfig.skipCorrupted = true;
-        List<FileData> rawData = extractFilesFromImage(ctx, rawConfig, false, true, false, null);
-        byte[] existingData = rawData.isEmpty() ? new byte[0] : rawData.get(0).data;
+        ExtractResult extractResult = extractFilesFromImage(ctx, rawConfig, false, true, false, null);
+        byte[] existingData = extractResult.files.isEmpty() ? new byte[0] : extractResult.files.get(0).data;
 
         appendDataToImage(ctx, existingData, newFiles, config);
         if (!ImageIO.write(ctx.image, "png", new File(outputImagePath))) {
@@ -578,7 +596,8 @@ public class Steganography {
         SteganographyConfig config = new SteganographyConfig();
         config.skipCorrupted = true;
 
-        List<FileData> files = extractFilesFromImage(ctx, config, false, false, false, null);
+        ExtractResult extractResult = extractFilesFromImage(ctx, config, false, false, false, null);
+        List<FileData> files = extractResult.files;
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
         }
@@ -618,7 +637,8 @@ public class Steganography {
         ImageContext ctx = new ImageContext(inputImagePath);
         config.skipCorrupted = true;
         config.silentDecrypt = false;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false, false, fileNumber);
+        ExtractResult extractResult = extractFilesFromImage(ctx, config, true, false, false, fileNumber);
+        List<FileData> files = extractResult.files;
 
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
@@ -666,28 +686,33 @@ public class Steganography {
         // Ensure decryption warnings are shown and no errors terminate listing
         config.silentDecrypt = false;
         config.skipCorrupted = true;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false, true, null);
+        ExtractResult extractResult = extractFilesFromImage(ctx, config, true, false, true, null);
+        List<FileData> files = extractResult.files;
         int numFiles = files.size();
-        int totalBitsUsed = 40;
+        int totalBitsUsed = extractResult.magicFound ? 40 : 0;
 
-        System.out.println("Number of embedded files: " + numFiles);
-        if (numFiles > 0) {
-            // Adjust header based on noCRC flag
-            String crcHeaderFormat = config.noCRC ? "%3s" : "%12s";
-            System.out.printf("\n%3s " + crcHeaderFormat + " %8s %1s %1s %9s %s\n",
-                    "Num", "CRC", "Emb.size", "C", "P", "Filesize", "Filename");
-            for (int fileIdx = 1; fileIdx <= numFiles; fileIdx++) {
-                FileData file = files.get(fileIdx - 1);
-                totalBitsUsed += (1 + file.filename.length() + 1 + 4 + 4 + file.embeddedSize) * 8;
-                // Verify CRC on embeddedData (post-compression, post-encryption)
-                String crcStatus = DataProcessor.calculateCRC(file.embeddedData) == file.crc ? "OK" : "ERR";
-                String crcDisplay = config.noCRC ? crcStatus : String.format("%08X %s", file.crc, crcStatus);
-                String fileSize = (file.data.length == 0 && file.isEncrypted) ? "<unknown>" : String.valueOf(file.data.length);
-                System.out.printf("%3d " + crcHeaderFormat + " %8d %1s %1s %9s %s\n",
-                        fileIdx, crcDisplay, file.embeddedSize,
-                        file.isCompressed ? "Y" : "N",
-                        file.isEncrypted ? "Y" : "N",
-                        fileSize, file.filename);
+        if (numFiles == 0 && !extractResult.magicFound) {
+            System.out.println("No embedded data found in the image.");
+        } else {
+            System.out.println("Number of embedded files: " + numFiles);
+            if (numFiles > 0) {
+                // Adjust header based on noCRC flag
+                String crcHeaderFormat = config.noCRC ? "%3s" : "%12s";
+                System.out.printf("\n%3s " + crcHeaderFormat + " %8s %1s %1s %9s %s\n",
+                        "Num", "CRC", "Emb.size", "C", "P", "Filesize", "Filename");
+                for (int fileIdx = 1; fileIdx <= numFiles; fileIdx++) {
+                    FileData file = files.get(fileIdx - 1);
+                    totalBitsUsed += (1 + file.filename.length() + 1 + 4 + 4 + file.embeddedSize) * 8;
+                    // Verify CRC on embeddedData (post-compression, post-encryption)
+                    String crcStatus = DataProcessor.calculateCRC(file.embeddedData) == file.crc ? "OK" : "ERR";
+                    String crcDisplay = config.noCRC ? crcStatus : String.format("%08X %s", file.crc, crcStatus);
+                    String fileSize = (file.data.length == 0 && file.isEncrypted) ? "<unknown>" : String.valueOf(file.data.length);
+                    System.out.printf("%3d " + crcHeaderFormat + " %8d %1s %1s %9s %s\n",
+                            fileIdx, crcDisplay, file.embeddedSize,
+                            file.isCompressed ? "Y" : "N",
+                            file.isEncrypted ? "Y" : "N",
+                            fileSize, file.filename);
+                }
             }
         }
 

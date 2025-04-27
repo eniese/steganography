@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+java -jar target/Steganography-1.0.jar $@

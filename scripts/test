@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+
+export PATH=".:./scripts:$PATH"
+logfile='test.out'
+
+exec > $logfile 2>&1
+PS4="\n\n> "; set -x
+
+cp screenshot.png img.png
+
+ls -l img.png
+
+steg list img.png
+
+steg clear img.png
+
+ls -l img.png
+
+steg list img.png
+
