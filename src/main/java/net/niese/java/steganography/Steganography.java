@@ -288,7 +288,7 @@ public class Steganography {
     /**
      * Extracts embedded files from an image.
      */
-    private static List<FileData> extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing) throws Exception {
+    private static List<FileData> extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing, Integer targetFileNumber) throws Exception {
         List<FileData> files = new ArrayList<>();
         ByteArrayOutputStream baos = rawMode ? new ByteArrayOutputStream() : null;
         int currentBitPosition = 0;
@@ -351,7 +351,9 @@ public class Steganography {
                     String password = config.passwords.get(fileIdx + 1);
                     if (password == null) password = config.passwords.get(0);
                     if (password == null) {
-                        if (!config.silentExtract && !config.silentDecrypt) {
+                        // Only warn if this is the target file being extracted (or listing/extracting all)
+                        if ((isListing || targetFileNumber == null || targetFileNumber == 0 || targetFileNumber == fileIdx + 1) &&
+                            !config.silentExtract && !config.silentDecrypt) {
                             System.err.println("Warning: File " + filename + " is encrypted, no password provided.");
                         }
                         processedData = new byte[0];
@@ -557,7 +559,7 @@ public class Steganography {
 
         SteganographyConfig rawConfig = new SteganographyConfig();
         rawConfig.skipCorrupted = true;
-        List<FileData> rawData = extractFilesFromImage(ctx, rawConfig, false, true, false);
+        List<FileData> rawData = extractFilesFromImage(ctx, rawConfig, false, true, false, null);
         byte[] existingData = rawData.isEmpty() ? new byte[0] : rawData.get(0).data;
 
         appendDataToImage(ctx, existingData, newFiles, config);
@@ -575,7 +577,7 @@ public class Steganography {
         SteganographyConfig config = new SteganographyConfig();
         config.skipCorrupted = true;
 
-        List<FileData> files = extractFilesFromImage(ctx, config, false, false, false);
+        List<FileData> files = extractFilesFromImage(ctx, config, false, false, false, null);
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
         }
@@ -615,7 +617,7 @@ public class Steganography {
         ImageContext ctx = new ImageContext(inputImagePath);
         config.skipCorrupted = true;
         config.silentDecrypt = false;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false, false);
+        List<FileData> files = extractFilesFromImage(ctx, config, true, false, false, fileNumber);
 
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
@@ -663,7 +665,7 @@ public class Steganography {
         // Ensure decryption warnings are shown and no errors terminate listing
         config.silentDecrypt = false;
         config.skipCorrupted = true;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false, true);
+        List<FileData> files = extractFilesFromImage(ctx, config, true, false, true, null);
         int numFiles = files.size();
         int totalBitsUsed = 40;
 
