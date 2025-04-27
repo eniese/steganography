@@ -43,6 +43,7 @@ public class Steganography {
         boolean skipCorrupted;
         boolean silentExtract;
         boolean silentDecrypt;
+        boolean showCRC; // New flag for showing CRC in list output
     }
 
     /**
@@ -671,15 +672,20 @@ public class Steganography {
 
         System.out.println("Number of embedded files: " + numFiles);
         if (numFiles > 0) {
-            System.out.printf("\n%3s %3s %8s %1s %1s %9s %s\n", "Num", "CRC", "Emb.size", "C", "P", "Filesize", "Filename");
+            // Adjust header based on showCRC flag
+            String crcHeaderFormat = config.showCRC ? "%-12s" : "%3s";
+            System.out.printf("\n%3s " + crcHeaderFormat + " %8s %1s %1s %9s %s\n",
+                    "Num", "CRC", "Emb.size", "C", "P", "Filesize", "Filename");
             for (int fileIdx = 1; fileIdx <= numFiles; fileIdx++) {
                 FileData file = files.get(fileIdx - 1);
                 totalBitsUsed += (1 + file.filename.length() + 1 + 4 + 4 + file.embeddedSize) * 8;
                 // Verify CRC on embeddedData (post-compression, post-encryption)
                 String crcStatus = DataProcessor.calculateCRC(file.embeddedData) == file.crc ? "OK" : "ERR";
+                String crcDisplay = config.showCRC ? String.format("%08X %s", file.crc, crcStatus) : crcStatus;
                 String fileSize = (file.data.length == 0 && file.isEncrypted) ? "<unknown>" : String.valueOf(file.data.length);
-                System.out.printf("%3d %3s %8d %1s %1s %9s %s\n",
-                        fileIdx, crcStatus, file.embeddedSize,
+                // Adjust row format based on showCRC flag
+                System.out.printf("%3d " + crcHeaderFormat + " %8d %1s %1s %9s %s\n",
+                        fileIdx, crcDisplay, file.embeddedSize,
                         file.isCompressed ? "Y" : "N",
                         file.isEncrypted ? "Y" : "N",
                         fileSize, file.filename);
@@ -704,7 +710,7 @@ public class Steganography {
         System.out.println("Commands:");
         System.out.println("  embed <input_image> <output_image> <data_file1> [<data_file2> ...] [--password <password>] [--no-compression <file1,file2,...>]");
         System.out.println("  extract <input_image> <output_dir> [file_number] [--password[N] <password>] [--skip-corrupted]");
-        System.out.println("  list <input_image> [--password[N] <password>] [--skip-corrupted]");
+        System.out.println("  list <input_image> [--password[N] <password>] [--skip-corrupted] [--show-CRC]");
         System.out.println("  delete <input_image> <output_image> <file_number>");
         System.out.println("  clear <input_image> [<output_image>]");
         System.out.println("  -h, --help");
@@ -712,6 +718,7 @@ public class Steganography {
         System.out.println("  --password[N] <password> - Encrypt/decrypt data for file N (or all if N is omitted).");
         System.out.println("  --no-compression <file1,file2,...> - Skip compression for specified files.");
         System.out.println("  --skip-corrupted - Skip corrupted files during extraction or listing.");
+        System.out.println("  --show-CRC - Show CRC values in hexadecimal for the list command.");
     }
 
     /**
@@ -740,6 +747,8 @@ public class Steganography {
                     config.noCompressionFiles.addAll(Arrays.asList(args[++i].split(",")));
                 } else if (args[i].equals("--skip-corrupted")) {
                     config.skipCorrupted = true;
+                } else if (args[i].equals("--show-CRC")) {
+                    config.showCRC = true;
                 } else {
                     mainArgs.add(args[i]);
                 }
