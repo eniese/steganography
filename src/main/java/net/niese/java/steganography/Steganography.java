@@ -472,7 +472,7 @@ public class Steganography {
             file.isEncrypted = isEncrypted;
             file.embeddedData = Arrays.copyOf(processedData, processedData.length); // Store the final embedded data
 
-            System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, crc=%d%n",
+            System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, CRC=%08X%n",
                     file.filename, isCompressed, isEncrypted, processedData.length, crc);
         }
 
