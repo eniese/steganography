@@ -26,13 +26,13 @@ public class Steganography {
     private static final int MAX_FILES = 255;
     private static final int BITS_PER_PIXEL = 6;
 
-    // Random salt for encryption
-    private static final byte[] SALT;
-
-    static {
-        SALT = new byte[16];
-        new SecureRandom().nextBytes(SALT);
-    }
+    // Fixed salt for encryption
+    private static final byte[] SALT = new byte[] {
+        (byte) 0x00, (byte) 0x01, (byte) 0x02, (byte) 0x03,
+        (byte) 0x04, (byte) 0x05, (byte) 0x06, (byte) 0x07,
+        (byte) 0x08, (byte) 0x09, (byte) 0x0A, (byte) 0x0B,
+        (byte) 0x0C, (byte) 0x0D, (byte) 0x0E, (byte) 0x0F
+    };
 
     /**
      * Configuration for steganography operations.
@@ -50,9 +50,9 @@ public class Steganography {
      */
     static class FileData {
         String filename;
-        byte[] data;
-        byte[] embeddedData;
-        int crc;
+        byte[] data; // Decrypted/decompressed data
+        byte[] embeddedData; // Raw embedded data (post-compression, post-encryption)
+        int crc; // CRC of embeddedData
         boolean isCompressed;
         boolean isEncrypted;
         int embeddedSize;
@@ -269,18 +269,26 @@ public class Steganography {
         }
 
         static byte[] intToBytes(int value) {
-            return new byte[]{(byte) (value >> 24), (byte) (value >> 16), (byte) (value >> 8), (byte) value};
+            return new byte[]{
+                    (byte) (value >> 24),
+                    (byte) (value >> 16),
+                    (byte) (value >> 8),
+                    (byte) value
+            };
         }
 
         static int bytesToInt(byte[] bytes) {
-            return ((bytes[0] & 0xFF) << 24) | ((bytes[1] & 0xFF) << 16) | ((bytes[2] & 0xFF) << 8) | (bytes[3] & 0xFF);
+            return ((bytes[0] & 0xFF) << 24) |
+                   ((bytes[1] & 0xFF) << 16) |
+                   ((bytes[2] & 0xFF) << 8) |
+                   (bytes[3] & 0xFF);
         }
     }
 
     /**
      * Extracts embedded files from an image.
      */
-    private static List<FileData> extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode) throws Exception {
+    private static List<FileData> extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing) throws Exception {
         List<FileData> files = new ArrayList<>();
         ByteArrayOutputStream baos = rawMode ? new ByteArrayOutputStream() : null;
         int currentBitPosition = 0;
@@ -336,8 +344,8 @@ public class Steganography {
                     continue;
                 }
 
-                byte[] embeddedData = data;
-                byte[] processedData = needData ? data : new byte[0];
+                byte[] embeddedData = Arrays.copyOf(data, data.length); // Preserve raw embedded data
+                byte[] processedData = needData ? Arrays.copyOf(data, data.length) : new byte[0];
 
                 if (needData && isEncrypted) {
                     String password = config.passwords.get(fileIdx + 1);
@@ -351,7 +359,12 @@ public class Steganography {
                         try {
                             processedData = DataProcessor.decrypt(processedData, password);
                         } catch (Exception e) {
-                            if (config.silentDecrypt) {
+                            if (isListing) {
+                                if (!config.silentExtract && !config.silentDecrypt) {
+                                    System.err.println("Warning: Decryption failed for file " + filename + ": " + e.getMessage());
+                                }
+                                processedData = new byte[0];
+                            } else if (config.silentDecrypt) {
                                 processedData = new byte[0];
                             } else if (config.skipCorrupted) {
                                 if (!config.silentExtract) {
@@ -369,7 +382,7 @@ public class Steganography {
                     try {
                         processedData = DataProcessor.decompress(processedData);
                     } catch (Exception e) {
-                        if (config.skipCorrupted) {
+                        if (isListing || config.skipCorrupted) {
                             if (!config.silentExtract && !config.silentDecrypt) {
                                 System.err.println("Warning: Decompression failed for file " + filename + ".");
                             }
@@ -383,7 +396,7 @@ public class Steganography {
                 files.add(new FileData(filename, processedData, storedCrc, isCompressed, isEncrypted, dataLength, embeddedData));
                 Arrays.fill(data, (byte) 0);
             } catch (Exception e) {
-                if (config.skipCorrupted) {
+                if (isListing || config.skipCorrupted) {
                     if (!config.silentExtract && !config.silentDecrypt) {
                         System.err.println("Warning: Failed to extract file " + (fileIdx + 1) + ": " + e.getMessage());
                     }
@@ -441,6 +454,7 @@ public class Steganography {
                 processedData = DataProcessor.encrypt(processedData, config.passwords.get(0));
             }
 
+            // Calculate CRC on the final embedded data (post-compression, post-encryption)
             int crc = DataProcessor.calculateCRC(processedData);
             byte statusFlag = (byte) ((isCompressed ? 0x01 : 0) | (isEncrypted ? 0x02 : 0));
             byte[] filenameBytes = file.filename.getBytes(StandardCharsets.UTF_8);
@@ -456,9 +470,10 @@ public class Steganography {
             file.crc = crc;
             file.isCompressed = isCompressed;
             file.isEncrypted = isEncrypted;
+            file.embeddedData = Arrays.copyOf(processedData, processedData.length); // Store the final embedded data
 
-            System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d%n",
-                    file.filename, isCompressed, isEncrypted, processedData.length);
+            System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, crc=%d%n",
+                    file.filename, isCompressed, isEncrypted, processedData.length, crc);
         }
 
         return baos.toByteArray();
@@ -537,13 +552,12 @@ public class Steganography {
                 throw new IllegalArgumentException("Filename too long: " + filename);
             }
             byte[] data = Utils.readFileToBytes(dataFilePath);
-            int crc = DataProcessor.calculateCRC(data);
-            newFiles.add(new FileData(filename, data, crc, false, config.passwords.containsKey(0), 0, new byte[0]));
+            newFiles.add(new FileData(filename, data, 0, false, config.passwords.containsKey(0), 0, new byte[0]));
         }
 
         SteganographyConfig rawConfig = new SteganographyConfig();
         rawConfig.skipCorrupted = true;
-        List<FileData> rawData = extractFilesFromImage(ctx, rawConfig, false, true);
+        List<FileData> rawData = extractFilesFromImage(ctx, rawConfig, false, true, false);
         byte[] existingData = rawData.isEmpty() ? new byte[0] : rawData.get(0).data;
 
         appendDataToImage(ctx, existingData, newFiles, config);
@@ -561,7 +575,7 @@ public class Steganography {
         SteganographyConfig config = new SteganographyConfig();
         config.skipCorrupted = true;
 
-        List<FileData> files = extractFilesFromImage(ctx, config, false, false);
+        List<FileData> files = extractFilesFromImage(ctx, config, false, false, false);
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
         }
@@ -601,7 +615,7 @@ public class Steganography {
         ImageContext ctx = new ImageContext(inputImagePath);
         config.skipCorrupted = true;
         config.silentDecrypt = false;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false);
+        List<FileData> files = extractFilesFromImage(ctx, config, true, false, false);
 
         if (files.isEmpty()) {
             throw new IllegalStateException("No files embedded in the image.");
@@ -640,14 +654,16 @@ public class Steganography {
     }
 
     /**
-     * Lists embedded file details.
+     * Lists embedded file details, using passwords for decryption.
      */
     public static void listData(String inputImagePath, SteganographyConfig config) throws Exception {
         ImageContext ctx = new ImageContext(inputImagePath);
         int totalCapacityBytes = ctx.maxBits / 8;
 
-        config.silentDecrypt = true;
-        List<FileData> files = extractFilesFromImage(ctx, config, true, false);
+        // Ensure decryption warnings are shown and no errors terminate listing
+        config.silentDecrypt = false;
+        config.skipCorrupted = true;
+        List<FileData> files = extractFilesFromImage(ctx, config, true, false, true);
         int numFiles = files.size();
         int totalBitsUsed = 40;
 
@@ -657,6 +673,7 @@ public class Steganography {
             for (int fileIdx = 1; fileIdx <= numFiles; fileIdx++) {
                 FileData file = files.get(fileIdx - 1);
                 totalBitsUsed += (1 + file.filename.length() + 1 + 4 + 4 + file.embeddedSize) * 8;
+                // Verify CRC on embeddedData (post-compression, post-encryption)
                 String crcStatus = DataProcessor.calculateCRC(file.embeddedData) == file.crc ? "OK" : "ERR";
                 String fileSize = (file.data.length == 0 && file.isEncrypted) ? "<unknown>" : String.valueOf(file.data.length);
                 System.out.printf("%3d %3s %8d %1s %1s %9s %s\n",
@@ -685,14 +702,14 @@ public class Steganography {
         System.out.println("Commands:");
         System.out.println("  embed <input_image> <output_image> <data_file1> [<data_file2> ...] [--password <password>] [--no-compression <file1,file2,...>]");
         System.out.println("  extract <input_image> <output_dir> [file_number] [--password[N] <password>] [--skip-corrupted]");
-        System.out.println("  list <input_image> [--password[N] <password>]");
+        System.out.println("  list <input_image> [--password[N] <password>] [--skip-corrupted]");
         System.out.println("  delete <input_image> <output_image> <file_number>");
         System.out.println("  clear <input_image> [<output_image>]");
         System.out.println("  -h, --help");
         System.out.println("Options:");
-        System.out.println("  --password[N] <password> - Encrypt/decrypt data for file N or all.");
+        System.out.println("  --password[N] <password> - Encrypt/decrypt data for file N (or all if N is omitted).");
         System.out.println("  --no-compression <file1,file2,...> - Skip compression for specified files.");
-        System.out.println("  --skip-corrupted - Skip corrupted files during extraction.");
+        System.out.println("  --skip-corrupted - Skip corrupted files during extraction or listing.");
     }
 
     /**
