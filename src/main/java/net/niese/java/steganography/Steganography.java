@@ -66,6 +66,14 @@ public class Steganography {
             this.isEncrypted = isEncrypted;
             this.embeddedSize = embeddedSize;
         }
+
+        // Optimization: Clear data to reduce memory usage
+        void clearData() {
+            if (data != null) {
+                Arrays.fill(data, (byte) 0);
+                data = null;
+            }
+        }
     }
 
     /**
@@ -76,7 +84,7 @@ public class Steganography {
         int width;
         int height;
         int maxBits;
-        int bitsPerPixel; // Not initialized until set by validateMagicHeader or formatData
+        int bitsPerPixel;
 
         ImageContext(String imagePath) throws IOException {
             image = ImageIO.read(new File(imagePath));
@@ -85,7 +93,7 @@ public class Steganography {
             }
             width = image.getWidth();
             height = image.getHeight();
-            maxBits = 0; // Will be set after bitsPerPixel is determined
+            maxBits = 0; // Set after bitsPerPixel is determined
         }
 
         void updateMaxBits() {
@@ -97,7 +105,7 @@ public class Steganography {
      * Validates the magic header and sets bitsPerPixel in ImageContext.
      */
     private static void validateMagicHeader(ImageContext ctx) throws Exception {
-        // Try extracting with both 6 and 3 bits per pixel
+        // Restored: Try both 6 and 3 bits to ensure robustness
         byte[] extractedMagic6 = new byte[4];
         byte[] extractedMagic3 = new byte[4];
         ctx.bitsPerPixel = 6;
@@ -106,7 +114,6 @@ public class Steganography {
         extractBits(ctx, extractedMagic3, 0, 32);
 
         byte[] extractedMagic = null;
-        // Check if either matches the magic header
         if (isValidMagic(extractedMagic6)) {
             extractedMagic = extractedMagic6;
             ctx.bitsPerPixel = (extractedMagic6[3] & 0x01) == 1 ? 6 : 3;
@@ -141,7 +148,6 @@ public class Steganography {
         ctx.bitsPerPixel = config.bitsPerPixel;
         ctx.updateMaxBits();
 
-        // Create magic header with bit mode
         byte[] magicHeader = Arrays.copyOf(MAGIC_STEG, 4);
         magicHeader[3] |= (ctx.bitsPerPixel == 6 ? 1 : 0); // Set LSB of 4th byte
         byte[] data = new byte[5];
@@ -160,7 +166,7 @@ public class Steganography {
      */
     public static void listData(String inputImagePath, SteganographyConfig config) throws Exception {
         ImageContext ctx = new ImageContext(inputImagePath);
-        validateMagicHeader(ctx); // Ensure image is formatted
+        validateMagicHeader(ctx);
 
         config.silentDecrypt = false;
         config.skipCorrupted = true;
@@ -188,6 +194,7 @@ public class Steganography {
                         file.isCompressed ? "Y" : "N",
                         file.isEncrypted ? "Y" : "N",
                         fileSize, file.filename);
+                file.clearData(); // Optimization: Free memory
             }
         }
 
@@ -299,9 +306,12 @@ public class Steganography {
      * Manages encryption, compression, and CRC calculations.
      */
     static class DataProcessor {
+        private static final String AES_ALGORITHM = "AES";
+        private static final String PBKDF2_ALGORITHM = "PBKDF2WithHmacSHA256";
+
         static byte[] encrypt(byte[] data, String password) throws Exception {
             SecretKeySpec key = generateKey(password);
-            Cipher cipher = Cipher.getInstance("AES");
+            Cipher cipher = Cipher.getInstance(AES_ALGORITHM);
             cipher.init(Cipher.ENCRYPT_MODE, key);
             byte[] encrypted = cipher.doFinal(data);
             Arrays.fill(key.getEncoded(), (byte) 0);
@@ -310,7 +320,7 @@ public class Steganography {
 
         static byte[] decrypt(byte[] data, String password) throws Exception {
             SecretKeySpec key = generateKey(password);
-            Cipher cipher = Cipher.getInstance("AES");
+            Cipher cipher = Cipher.getInstance(AES_ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, key);
             byte[] decrypted = cipher.doFinal(data);
             Arrays.fill(key.getEncoded(), (byte) 0);
@@ -319,15 +329,15 @@ public class Steganography {
 
         private static SecretKeySpec generateKey(String password) throws Exception {
             PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), SALT, 100_000, 128);
-            SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            SecretKeyFactory skf = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM);
             byte[] key = skf.generateSecret(spec).getEncoded();
-            SecretKeySpec secretKey = new SecretKeySpec(key, "AES");
+            SecretKeySpec secretKey = new SecretKeySpec(key, AES_ALGORITHM);
             Arrays.fill(key, (byte) 0);
             return secretKey;
         }
 
         static byte[] compress(byte[] data) throws IOException {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(data.length / 2);
             try (GZIPOutputStream gzip = new GZIPOutputStream(baos)) {
                 gzip.write(data);
             }
@@ -336,7 +346,7 @@ public class Steganography {
 
         static byte[] decompress(byte[] data) throws IOException {
             ByteArrayInputStream bais = new ByteArrayInputStream(data);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(data.length * 2);
             try (GZIPInputStream gzip = new GZIPInputStream(bais)) {
                 byte[] buffer = new byte[1024];
                 int len;
@@ -381,7 +391,12 @@ public class Steganography {
         }
 
         static byte[] readFileToBytes(String filePath) throws IOException {
-            return Files.readAllBytes(new File(filePath).toPath());
+            File file = new File(filePath);
+            byte[] data = new byte[(int) file.length()];
+            try (FileInputStream fis = new FileInputStream(file)) {
+                fis.read(data);
+            }
+            return data;
         }
 
         static byte[] intToBytes(int value) {
@@ -402,7 +417,7 @@ public class Steganography {
     }
 
     /**
-     * Result of extracting files from an image, including whether the magic number was found.
+     * Result of extracting files from an image.
      */
     static class ExtractResult {
         List<FileData> files;
@@ -426,17 +441,7 @@ public class Steganography {
         currentBitPosition = extractBits(ctx, extractedMagic, currentBitPosition, 32);
         if (rawMode) baos.write(extractedMagic);
 
-        boolean magicFound = true;
-        for (int i = 0; i < 3; i++) {
-            if (extractedMagic[i] != MAGIC_STEG[i]) {
-                magicFound = false;
-                break;
-            }
-        }
-        if (magicFound && (extractedMagic[3] & 0xFE) != (MAGIC_STEG[3] & 0xFE)) {
-            magicFound = false;
-        }
-        if (!magicFound) {
+        if (!isValidMagic(extractedMagic)) {
             return new ExtractResult(files, false);
         }
 
@@ -555,9 +560,6 @@ public class Steganography {
         return new ExtractResult(files, true);
     }
 
-    /**
-     * Extracts a batch of bits from the image.
-     */
     private static int extractBits(ImageContext ctx, byte[] target, int startBit, int numBits) {
         int currentBitPosition = startBit;
         for (int i = 0; i < numBits; i++) {
@@ -566,9 +568,6 @@ public class Steganography {
         return currentBitPosition;
     }
 
-    /**
-     * Builds data to embed in the image.
-     */
     private static byte[] buildDataToEmbed(List<FileData> files, SteganographyConfig config, boolean isNewFile) throws Exception {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         byte[] magicHeader = Arrays.copyOf(MAGIC_STEG, 4);
@@ -614,6 +613,7 @@ public class Steganography {
             file.isCompressed = isCompressed;
             file.isEncrypted = isEncrypted;
             file.embeddedData = Arrays.copyOf(processedData, processedData.length);
+            file.clearData(); // Optimization: Free raw data
 
             System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, CRC=%08X%n",
                     file.filename, isCompressed, isEncrypted, processedData.length, crc);
@@ -622,9 +622,6 @@ public class Steganography {
         return baos.toByteArray();
     }
 
-    /**
-     * Appends new data to an image.
-     */
     private static void appendDataToImage(ImageContext ctx, byte[] existingData, List<FileData> newFiles, SteganographyConfig config) throws Exception {
         byte[] newData = buildDataToEmbed(newFiles, config, true);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -643,9 +640,6 @@ public class Steganography {
         embedDataInImage(ctx, baos.toByteArray());
     }
 
-    /**
-     * Rewrites the image with specified files.
-     */
     private static void rewriteImage(ImageContext ctx, String outputImagePath, List<FileData> files, SteganographyConfig config) throws Exception {
         config.bitsPerPixel = ctx.bitsPerPixel;
         byte[] fullData = buildDataToEmbed(files, config, false);
@@ -655,12 +649,9 @@ public class Steganography {
         }
     }
 
-    /**
-     * Embeds data into the image and validates capacity.
-     */
     private static void embedDataInImage(ImageContext ctx, byte[] data) {
         int totalBits = data.length * 8;
-        int requiredPixels = (int) Math.ceil((double) totalBits / ctx.bitsPerPixel);
+        int requiredPixels = (totalBits + ctx.bitsPerPixel - 1) / ctx.bitsPerPixel;
 
         if (ctx.width * ctx.height < requiredPixels) {
             int minSide = (int) Math.ceil(Math.sqrt(requiredPixels));
@@ -670,9 +661,6 @@ public class Steganography {
         ImageProcessor.embedBits(ctx.image, ctx.width, ctx.height, data, true, 0, ctx.bitsPerPixel);
     }
 
-    /**
-     * Embeds files into a PNG image.
-     */
     public static void embedData(String inputImagePath, String outputImagePath, String[] dataFilePaths, SteganographyConfig config) throws Exception {
         if (dataFilePaths.length == 0) {
             throw new IllegalArgumentException("No files provided to embed.");
@@ -682,7 +670,7 @@ public class Steganography {
         ImageContext ctx = new ImageContext(inputImagePath);
         validateMagicHeader(ctx);
 
-        List<FileData> newFiles = new ArrayList<>();
+        List<FileData> newFiles = new ArrayList<>(dataFilePaths.length);
         for (String dataFilePath : dataFilePaths) {
             File file = new File(dataFilePath);
             if (file.length() > ctx.maxBits / 8) {
@@ -709,9 +697,6 @@ public class Steganography {
         }
     }
 
-    /**
-     * Deletes a specific embedded file.
-     */
     public static void deleteData(String inputImagePath, String outputImagePath, int fileNumber) throws Exception {
         Utils.validateImagePaths(inputImagePath, outputImagePath);
         ImageContext ctx = new ImageContext(inputImagePath);
@@ -737,9 +722,6 @@ public class Steganography {
         System.out.println("Deleted file " + fileNumber + " (" + deletedFilename + "). New image saved to " + outputImagePath);
     }
 
-    /**
-     * Extracts embedded files to a directory.
-     */
     public static void extractData(String inputImagePath, String outputDir, Integer fileNumber, SteganographyConfig config) throws Exception {
         File dir = new File(outputDir);
         if (!dir.exists() && !dir.mkdirs()) {
@@ -778,7 +760,7 @@ public class Steganography {
                     fos.write(file.data);
                 }
                 System.out.println("Extracted " + uniqueFilename + " to " + outputDir);
-                Arrays.fill(file.data, (byte) 0);
+                file.clearData();
             }
         } else {
             FileData file = files.get(fileNumber - 1);
@@ -790,13 +772,10 @@ public class Steganography {
                 fos.write(file.data);
             }
             System.out.println("Extracted " + uniqueFilename + " to " + outputDir);
-            Arrays.fill(file.data, (byte) 0);
+            file.clearData();
         }
     }
 
-    /**
-     * Prints usage instructions.
-     */
     private static void printHelp() {
         System.out.println("Usage: java Steganography [command] [options]");
         System.out.println("Commands:");
@@ -814,9 +793,6 @@ public class Steganography {
         System.out.println("  --bits <1|2> - Set bits per pixel for format (1=3 bits, 2=6 bits; default 2).");
     }
 
-    /**
-     * Command-line interface.
-     */
     public static void main(String[] args) {
         try {
             if (args.length == 0 || args[0].equals("-h") || args[0].equals("--help")) {

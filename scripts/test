@@ -61,11 +61,7 @@ diff -s 'blah/LICENSE' 'LICENSE'
 
 
 # format second file
-steg format img2.png
-ls -l img2.png
 steg list img2.png
-steg list img2.png
-steg format img2.png
 ls -l img2.png
 steg list img2.png
 steg embed img2.png img2.png --password secret1 src/main/java/net/niese/java/steganography/Steganography.java
@@ -105,6 +101,11 @@ diff -s 'blah/Steganography$SteganographyConfig.class' 'target/classes/net/niese
 diff -s 'blah/Steganography.class' 'target/classes/net/niese/java/steganography/Steganography.class'
 diff -s 'blah/Steganography$ImageProcessor.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
 diff -s 'blah/LICENSE' 'LICENSE'
+
+# going to format the files again
+steg format --bits 1 img1.png
+steg format --bits 2 img2.png
+
 
 # cleanup
 set +x
