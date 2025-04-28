@@ -121,7 +121,7 @@ diff -s 'blah/Steganography$ImageProcessor.class' 'target/classes/net/niese/java
 diff -s 'blah/LICENSE' 'LICENSE'
 diff -s 'blah/LICENSE-1' 'LICENSE'
 diff -s 'blah/Steganography$Utils-1.class' 'target/classes/net/niese/java/steganography/Steganography$Utils.class'
-diff -s 'blah/Steganography$FileData-1.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class'
+diff -s 'blah/Steganography$FileData.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class'
 diff -s 'blah/Steganography$ExtractResult-1.class' 'target/classes/net/niese/java/steganography/Steganography$ExtractResult.class'
 diff -s 'blah/Steganography$ImageContext-1.class' 'target/classes/net/niese/java/steganography/Steganography$ImageContext.class'
 diff -s 'blah/Steganography$DataProcessor-1.class' 'target/classes/net/niese/java/steganography/Steganography$DataProcessor.class'
