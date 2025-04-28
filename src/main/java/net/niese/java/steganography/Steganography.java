@@ -108,7 +108,27 @@ public class Steganography {
             }
             width = image.getWidth();
             height = image.getHeight();
-            maxBits = 0; // Set after bitsPerPixel is determined
+            maxBits = 0;
+        }
+
+        boolean validateMagicHeader() {
+            byte[] extractedMagic6 = new byte[4];
+            byte[] extractedMagic3 = new byte[4];
+            bitsPerPixel = 6;
+            extractBits(this, extractedMagic6, 0, 32);
+            bitsPerPixel = 3;
+            extractBits(this, extractedMagic3, 0, 32);
+
+            if (isValidMagic(extractedMagic6)) {
+                bitsPerPixel = (extractedMagic6[3] & 0x01) == 1 ? 6 : 3;
+                updateMaxBits();
+                return true;
+            } else if (isValidMagic(extractedMagic3)) {
+                bitsPerPixel = (extractedMagic3[3] & 0x01) == 1 ? 6 : 3;
+                updateMaxBits();
+                return true;
+            }
+            return false;
         }
 
         void updateMaxBits() {
@@ -117,29 +137,12 @@ public class Steganography {
     }
 
     /**
-     * Validates the magic header and sets bitsPerPixel in ImageContext.
+     * Validates the magic header in the image.
      */
     private static void validateMagicHeader(ImageContext ctx) throws Exception {
-        // Try both 6 and 3 bits to ensure robustness
-        byte[] extractedMagic6 = new byte[4];
-        byte[] extractedMagic3 = new byte[4];
-        ctx.bitsPerPixel = 6;
-        extractBits(ctx, extractedMagic6, 0, 32);
-        ctx.bitsPerPixel = 3;
-        extractBits(ctx, extractedMagic3, 0, 32);
-
-        byte[] extractedMagic = null;
-        if (isValidMagic(extractedMagic6)) {
-            extractedMagic = extractedMagic6;
-            ctx.bitsPerPixel = (extractedMagic6[3] & 0x01) == 1 ? 6 : 3;
-        } else if (isValidMagic(extractedMagic3)) {
-            extractedMagic = extractedMagic3;
-            ctx.bitsPerPixel = (extractedMagic3[3] & 0x01) == 1 ? 6 : 3;
-        } else {
+        if (!ctx.validateMagicHeader()) {
             throw new IllegalStateException("Image is not formatted. Please run 'format' first.");
         }
-
-        ctx.updateMaxBits();
     }
 
     /**
@@ -161,41 +164,25 @@ public class Steganography {
         Utils.validateImagePaths(inputImagePath, outputImagePath);
         ImageContext ctx = new ImageContext(inputImagePath);
 
-        // Check for magic header, trying 3 bits per pixel first
-        byte[] extractedMagic = new byte[4];
-        ctx.bitsPerPixel = 3; // Try 3 bits first
-        extractBits(ctx, extractedMagic, 0, 32);
-        boolean hasMagic = isValidMagic(extractedMagic) && (extractedMagic[3] & 0x01) == 0; // Check bit 0 = 0 for 3 bits
-
-        // If magic header not found with 3 bits, try 6 bits per pixel
-        if (!hasMagic) {
-            ctx.bitsPerPixel = 6; // Try 6 bits
-            Arrays.fill(extractedMagic, (byte) 0); // Clear previous attempt
-            extractBits(ctx, extractedMagic, 0, 32);
-            hasMagic = isValidMagic(extractedMagic) && (extractedMagic[3] & 0x01) == 1; // Check bit 0 = 1 for 6 bits
-        }
-
-        if (hasMagic) {
-            // Magic header found, bits per pixel is already set (3 or 6)
-            ctx.updateMaxBits();
+        int numFiles = 0;
+        if (ctx.validateMagicHeader()) {
             byte[] numFilesBytes = new byte[1];
             extractBits(ctx, numFilesBytes, 32, 8);
-            int numFiles = numFilesBytes[0] & 0xFF;
+            numFiles = numFilesBytes[0] & 0xFF;
 
             if (numFiles > 0 && !config.force) {
-                throw new IllegalStateException("Image already contains " + numFiles + " embedded file(s). Use --force to overwrite.");
+                throw new IllegalStateException(String.format("Image already contains %d embedded file(s). Use --force to overwrite.", numFiles));
             }
         }
 
-        // Proceed with formatting using user-specified bits per pixel
         ctx.bitsPerPixel = config.bitsPerPixel;
         ctx.updateMaxBits();
 
         byte[] magicHeader = Arrays.copyOf(MAGIC_STEG, 4);
-        magicHeader[3] |= (ctx.bitsPerPixel == 6 ? 1 : 0); // Set LSB of 4th byte
+        magicHeader[3] |= (ctx.bitsPerPixel == 6 ? 1 : 0);
         byte[] data = new byte[5];
         System.arraycopy(magicHeader, 0, data, 0, 4);
-        data[4] = 0; // Number of files = 0
+        data[4] = 0;
 
         ImageProcessor.embedBits(ctx.image, ctx.width, ctx.height, data, true, 0, ctx.bitsPerPixel);
         if (!ImageIO.write(ctx.image, "png", new File(outputImagePath))) {
@@ -237,7 +224,7 @@ public class Steganography {
                         file.isCompressed ? "Y" : "N",
                         file.isEncrypted ? "Y" : "N",
                         fileSize, file.filename);
-                file.clearData(); // Optimization: Free memory
+                file.clearData();
             }
         }
 
@@ -256,58 +243,45 @@ public class Steganography {
      * Handles bit manipulation for embedding and extracting data.
      */
     static class ImageProcessor {
-        static void embedBits(BufferedImage image, int width, int height, byte[] data, boolean clearRemaining, int startBit, int bitsPerPixel) {
+        private static void embedChannelBits(int[] rgbChannels, int channelIndex, int bitsPerChannel,
+                                            byte[] data, int totalBits, int[] currentBitPosition) {
+            int byteIndex = currentBitPosition[0] / 8;
+            int bitIndex = 7 - (currentBitPosition[0] % 8);
+            int bit = (data[byteIndex] >> bitIndex) & 1;
+            rgbChannels[channelIndex] = bitsPerChannel == 2
+                ? (rgbChannels[channelIndex] & 0xFC) | (bit << 1)
+                : (rgbChannels[channelIndex] & 0xFE) | bit;
+            if (bitsPerChannel == 2 && ++currentBitPosition[0] < totalBits) {
+                byteIndex = currentBitPosition[0] / 8;
+                bitIndex = 7 - (currentBitPosition[0] % 8);
+                rgbChannels[channelIndex] |= (data[byteIndex] >> bitIndex) & 1;
+                currentBitPosition[0]++;
+            } else {
+                currentBitPosition[0]++;
+            }
+        }
+
+        static void embedBits(BufferedImage image, int width, int height, byte[] data,
+                              boolean clearRemaining, int startBit, int bitsPerPixel) {
             int bitsPerChannel = bitsPerPixel / 3;
             int totalBits = data.length * 8;
-            int currentBitPosition = 0;
+            int[] currentBitPosition = {0};
+            int[] rgbChannels = new int[3];
 
-            for (int y = 0; y < height && currentBitPosition < totalBits; y++) {
-                for (int x = 0; x < width && currentBitPosition < totalBits; x++) {
+            for (int y = 0; y < height && currentBitPosition[0] < totalBits; y++) {
+                for (int x = 0; x < width && currentBitPosition[0] < totalBits; x++) {
                     int pixelIndex = y * width + x;
                     if (pixelIndex * bitsPerPixel < startBit) continue;
 
                     int rgb = image.getRGB(x, y);
-                    int r = (rgb >> 16) & 0xFF;
-                    int g = (rgb >> 8) & 0xFF;
-                    int b = rgb & 0xFF;
+                    rgbChannels[0] = (rgb >> 16) & 0xFF;
+                    rgbChannels[1] = (rgb >> 8) & 0xFF;
+                    rgbChannels[2] = rgb & 0xFF;
 
-                    for (int channel = 0; channel < 3 && currentBitPosition < totalBits; channel++) {
-                        int byteIndex = currentBitPosition / 8;
-                        int bitIndex = 7 - (currentBitPosition % 8);
-                        int bit = (data[byteIndex] >> bitIndex) & 1;
-                        if (channel == 0) {
-                            r = bitsPerChannel == 2 ? (r & 0xFC) | (bit << 1) : (r & 0xFE) | bit;
-                            if (bitsPerChannel == 2 && ++currentBitPosition < totalBits) {
-                                byteIndex = currentBitPosition / 8;
-                                bitIndex = 7 - (currentBitPosition % 8);
-                                r |= (data[byteIndex] >> bitIndex) & 1;
-                                currentBitPosition++;
-                            } else {
-                                currentBitPosition++;
-                            }
-                        } else if (channel == 1) {
-                            g = bitsPerChannel == 2 ? (g & 0xFC) | (bit << 1) : (g & 0xFE) | bit;
-                            if (bitsPerChannel == 2 && ++currentBitPosition < totalBits) {
-                                byteIndex = currentBitPosition / 8;
-                                bitIndex = 7 - (currentBitPosition % 8);
-                                g |= (data[byteIndex] >> bitIndex) & 1;
-                                currentBitPosition++;
-                            } else {
-                                currentBitPosition++;
-                            }
-                        } else {
-                            b = bitsPerChannel == 2 ? (b & 0xFC) | (bit << 1) : (b & 0xFE) | bit;
-                            if (bitsPerChannel == 2 && ++currentBitPosition < totalBits) {
-                                byteIndex = currentBitPosition / 8;
-                                bitIndex = 7 - (currentBitPosition % 8);
-                                b |= (data[byteIndex] >> bitIndex) & 1;
-                                currentBitPosition++;
-                            } else {
-                                currentBitPosition++;
-                            }
-                        }
+                    for (int channel = 0; channel < 3 && currentBitPosition[0] < totalBits; channel++) {
+                        embedChannelBits(rgbChannels, channel, bitsPerChannel, data, totalBits, currentBitPosition);
                     }
-                    image.setRGB(x, y, (r << 16) | (g << 8) | b);
+                    image.setRGB(x, y, (rgbChannels[0] << 16) | (rgbChannels[1] << 8) | rgbChannels[2]);
                 }
             }
 
@@ -326,10 +300,11 @@ public class Steganography {
             }
         }
 
-        static int extractBit(BufferedImage image, int width, int currentBitPosition, byte[] target, int targetBit, int bitsPerPixel) {
+        static int extractBit(BufferedImage image, int width, int height, int currentBitPosition,
+                              byte[] target, int targetBit, int bitsPerPixel) {
             int bitsPerChannel = bitsPerPixel / 3;
             int pixelIndex = currentBitPosition / bitsPerPixel;
-            if (pixelIndex >= image.getWidth() * image.getHeight()) {
+            if (pixelIndex >= width * height) {
                 throw new IllegalStateException("Reached end of image at bit " + currentBitPosition);
             }
 
@@ -337,9 +312,10 @@ public class Steganography {
             int y = pixelIndex / width;
             int rgb = image.getRGB(x, y);
             int channelIndex = currentBitPosition % bitsPerPixel;
-            int channel = channelIndex < bitsPerChannel ? (rgb >> 16) & 0xFF : channelIndex < 2 * bitsPerChannel ? (rgb >> 8) & 0xFF : rgb & 0xFF;
-            int bitInChannel = bitsPerChannel == 2 ? (channelIndex % bitsPerChannel == 0 ? 1 : 0) : 0;
+            int shift = channelIndex < bitsPerChannel ? 16 : channelIndex < 2 * bitsPerChannel ? 8 : 0;
+            int bitInChannel = bitsPerChannel == 2 && (channelIndex % bitsPerChannel) == 0 ? 1 : 0;
 
+            int channel = (rgb >> shift) & 0xFF;
             target[targetBit / 8] |= ((channel >> bitInChannel) & 1) << (7 - (targetBit % 8));
             return currentBitPosition + 1;
         }
@@ -380,7 +356,7 @@ public class Steganography {
         }
 
         static byte[] compress(byte[] data) throws IOException {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(data.length / 2);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(Math.max(data.length / 2, 1024));
             try (GZIPOutputStream gzip = new GZIPOutputStream(baos)) {
                 gzip.write(data);
             }
@@ -474,9 +450,67 @@ public class Steganography {
     }
 
     /**
+     * Processes decryption for a file, handling errors consistently.
+     */
+    private static void processDecryption(FileData file, SteganographyConfig config, boolean isListing, int fileIdx) {
+        if (!file.isEncrypted || file.isSkipped) return;
+
+        String password = config.passwords.get(fileIdx + 1);
+        if (password == null) password = config.passwords.get(0);
+        if (password == null) {
+            if ((isListing || !config.silentExtract) && !config.silentDecrypt) {
+                System.err.println("Warning: File " + file.filename + " is encrypted, no password provided.");
+            }
+            file.isSkipped = true;
+            file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+            file.data = new byte[0];
+            return;
+        }
+
+        try {
+            file.data = DataProcessor.decrypt(file.data, password);
+        } catch (Exception e) {
+            if (isListing || config.silentDecrypt || config.skipCorrupted) {
+                if (!config.silentExtract && !config.silentDecrypt) {
+                    System.err.println(String.format("Warning: Decryption failed for file %s: %s", file.filename, e.getMessage()));
+                }
+                file.isSkipped = true;
+                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+                file.data = new byte[0];
+            } else {
+                throw new RuntimeException(String.format("Decryption failed for file %s: %s", file.filename, e.getMessage()), e);
+            }
+        }
+    }
+
+    /**
+     * Processes decompression for a file, handling errors consistently.
+     */
+    private static void processDecompression(FileData file, SteganographyConfig config, boolean isListing) {
+        if (!file.isCompressed || file.isSkipped || file.data.length == 0) return;
+
+        try {
+            file.data = DataProcessor.decompress(file.data);
+        } catch (Exception e) {
+            if (isListing || config.skipCorrupted) {
+                if (!config.silentExtract && !config.silentDecrypt) {
+                    System.err.println("Warning: Decompression failed for file " + file.filename + ".");
+                }
+                file.isSkipped = true;
+                file.skipReason = SkipReason.CORRUPTED;
+                file.data = new byte[0];
+            } else {
+                throw new RuntimeException(String.format("Decompression failed for file %s: %s", file.filename, e.getMessage()), e);
+            }
+        }
+    }
+
+    /**
      * Extracts embedded files from an image.
      */
-    private static ExtractResult extractFilesFromImage(ImageContext ctx, SteganographyConfig config, boolean needData, boolean rawMode, boolean isListing, Integer targetFileNumber) throws Exception {
+    private static ExtractResult extractFilesFromImage(ImageContext ctx, SteganographyConfig config,
+                                                      boolean needData, boolean rawMode, boolean isListing,
+                                                      Integer targetFileNumber) throws Exception {
         List<FileData> files = new ArrayList<>();
         ByteArrayOutputStream baos = rawMode ? new ByteArrayOutputStream() : null;
         int currentBitPosition = 0;
@@ -500,7 +534,7 @@ public class Steganography {
                 currentBitPosition = extractBits(ctx, filenameLengthBytes, currentBitPosition, 8);
                 int filenameLength = filenameLengthBytes[0] & 0xFF;
                 if (filenameLength > MAX_FILENAME_LENGTH) {
-                    throw new IllegalStateException("Invalid filename length at file " + (fileIdx + 1) + ": " + filenameLength);
+                    throw new IllegalStateException(String.format("Invalid filename length at file %d: %d", fileIdx + 1, filenameLength));
                 }
 
                 byte[] filenameBytes = new byte[filenameLength];
@@ -538,7 +572,6 @@ public class Steganography {
                 byte[] processedData = needData ? Arrays.copyOf(data, data.length) : new byte[0];
                 FileData file = new FileData(filename, processedData, storedCrc, isCompressed, isEncrypted, dataLength, embeddedData);
 
-                // Validate CRC
                 if (needData) {
                     file.isCorrupted = DataProcessor.calculateCRC(embeddedData) != storedCrc;
                     if (file.isCorrupted) {
@@ -555,69 +588,14 @@ public class Steganography {
                     }
                 }
 
-                if (needData && isEncrypted && !file.isSkipped) {
-                    String password = config.passwords.get(fileIdx + 1);
-                    if (password == null) password = config.passwords.get(0);
-                    if (password == null) {
-                        if ((isListing || targetFileNumber == null || targetFileNumber == 0 || targetFileNumber == fileIdx + 1) &&
-                            !config.silentExtract && !config.silentDecrypt) {
-                            System.err.println("Warning: File " + filename + " is encrypted, no password provided.");
-                        }
-                        file.isSkipped = true;
-                        file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
-                        file.data = new byte[0];
-                    } else {
-                        try {
-                            file.data = DataProcessor.decrypt(file.data, password);
-                        } catch (Exception e) {
-                            if (isListing) {
-                                if (!config.silentExtract && !config.silentDecrypt) {
-                                    System.err.println("Warning: Decryption failed for file " + filename + ": " + e.getMessage());
-                                }
-                                file.isSkipped = true;
-                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
-                                file.data = new byte[0];
-                            } else if (config.silentDecrypt) {
-                                file.isSkipped = true;
-                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
-                                file.data = new byte[0];
-                            } else if (config.skipCorrupted) {
-                                if (!config.silentExtract) {
-                                    System.err.println("Warning: Decryption failed for file " + filename + ".");
-                                }
-                                file.isSkipped = true;
-                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
-                                file.data = new byte[0];
-                            } else {
-                                throw new IllegalStateException("Decryption failed for file " + filename + ": " + e.getMessage());
-                            }
-                        }
-                    }
-                }
-
-                if (needData && isCompressed && !file.isSkipped && file.data.length > 0) {
-                    try {
-                        file.data = DataProcessor.decompress(file.data);
-                    } catch (Exception e) {
-                        if (isListing || config.skipCorrupted) {
-                            if (!config.silentExtract && !config.silentDecrypt) {
-                                System.err.println("Warning: Decompression failed for file " + filename + ".");
-                            }
-                            file.isSkipped = true;
-                            file.skipReason = SkipReason.CORRUPTED;
-                            file.data = new byte[0];
-                        } else {
-                            throw new IllegalStateException("Decompression failed for file " + filename + ": " + e.getMessage());
-                        }
-                    }
-                }
+                processDecryption(file, config, isListing, fileIdx);
+                processDecompression(file, config, isListing);
 
                 files.add(file);
-                Arrays.fill(data, (byte) 0);
             } catch (Exception e) {
                 if (isListing || config.skipCorrupted) {
                     if (!config.silentExtract && !config.silentDecrypt) {
-                        System.err.println("Warning: Failed to extract file " + (fileIdx + 1) + ": " + e.getMessage());
+                        System.err.println(String.format("Warning: Failed to extract file %d: %s", fileIdx + 1, e.getMessage()));
                     }
                     continue;
                 }
@@ -635,9 +613,54 @@ public class Steganography {
     private static int extractBits(ImageContext ctx, byte[] target, int startBit, int numBits) {
         int currentBitPosition = startBit;
         for (int i = 0; i < numBits; i++) {
-            currentBitPosition = ImageProcessor.extractBit(ctx.image, ctx.width, currentBitPosition, target, i, ctx.bitsPerPixel);
+            currentBitPosition = ImageProcessor.extractBit(ctx.image, ctx.width, ctx.height,
+                                                          currentBitPosition, target, i, ctx.bitsPerPixel);
         }
         return currentBitPosition;
+    }
+
+    private static byte[] buildFileData(FileData file, SteganographyConfig config, boolean isNewFile) throws Exception {
+        byte[] rawData = file.data;
+        byte[] processedData = file.embeddedData;
+        boolean isCompressed = file.isCompressed;
+        boolean isEncrypted = file.isEncrypted;
+
+        if (isNewFile && !config.noCompressionFiles.contains(file.filename) && !isCompressed) {
+            byte[] compressedData = DataProcessor.compress(rawData);
+            if (compressedData.length < rawData.length) {
+                processedData = compressedData;
+                isCompressed = true;
+            } else {
+                processedData = rawData;
+            }
+        } else if (isNewFile) {
+            processedData = rawData;
+        }
+
+        if (isNewFile && isEncrypted) {
+            processedData = DataProcessor.encrypt(processedData, config.passwords.get(0));
+        }
+
+        int crc = DataProcessor.calculateCRC(processedData);
+        byte statusFlag = (byte) ((isCompressed ? 0x01 : 0) | (isEncrypted ? 0x02 : 0));
+        byte[] filenameBytes = file.filename.getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        baos.write(filenameBytes.length);
+        baos.write(filenameBytes);
+        baos.write(statusFlag);
+        baos.write(Utils.intToBytes(crc));
+        baos.write(Utils.intToBytes(processedData.length));
+        baos.write(processedData);
+
+        file.embeddedSize = processedData.length;
+        file.crc = crc;
+        file.isCompressed = isCompressed;
+        file.isEncrypted = isEncrypted;
+        file.embeddedData = Arrays.copyOf(processedData, processedData.length);
+        file.clearData();
+
+        return baos.toByteArray();
     }
 
     private static byte[] buildDataToEmbed(List<FileData> files, SteganographyConfig config, boolean isNewFile, boolean silent) throws Exception {
@@ -648,48 +671,11 @@ public class Steganography {
         baos.write(files.size());
 
         for (FileData file : files) {
-            byte[] rawData = file.data;
-            byte[] processedData = file.embeddedData;
-            boolean isCompressed = file.isCompressed;
-            boolean isEncrypted = file.isEncrypted;
-
-            if (isNewFile && !config.noCompressionFiles.contains(file.filename) && !isCompressed) {
-                byte[] compressedData = DataProcessor.compress(rawData);
-                if (compressedData.length < rawData.length) {
-                    processedData = compressedData;
-                    isCompressed = true;
-                } else {
-                    processedData = rawData;
-                }
-            } else if (isNewFile) {
-                processedData = rawData;
-            }
-
-            if (isNewFile && isEncrypted) {
-                processedData = DataProcessor.encrypt(processedData, config.passwords.get(0));
-            }
-
-            int crc = DataProcessor.calculateCRC(processedData);
-            byte statusFlag = (byte) ((isCompressed ? 0x01 : 0) | (isEncrypted ? 0x02 : 0));
-            byte[] filenameBytes = file.filename.getBytes(StandardCharsets.UTF_8);
-
-            baos.write(filenameBytes.length);
-            baos.write(filenameBytes);
-            baos.write(statusFlag);
-            baos.write(Utils.intToBytes(crc));
-            baos.write(Utils.intToBytes(processedData.length));
-            baos.write(processedData);
-
-            file.embeddedSize = processedData.length;
-            file.crc = crc;
-            file.isCompressed = isCompressed;
-            file.isEncrypted = isEncrypted;
-            file.embeddedData = Arrays.copyOf(processedData, processedData.length);
-            file.clearData(); // Optimization: Free raw data
-
+            byte[] fileData = buildFileData(file, config, isNewFile);
+            baos.write(fileData);
             if (!silent) {
                 System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, CRC=%08X%n",
-                        file.filename, isCompressed, isEncrypted, processedData.length, crc);
+                        file.filename, file.isCompressed, file.isEncrypted, file.embeddedSize, file.crc);
             }
         }
 
@@ -716,7 +702,7 @@ public class Steganography {
 
     private static void rewriteImage(ImageContext ctx, String outputImagePath, List<FileData> files, SteganographyConfig config) throws Exception {
         config.bitsPerPixel = ctx.bitsPerPixel;
-        byte[] fullData = buildDataToEmbed(files, config, false, true); // Silent for delete
+        byte[] fullData = buildDataToEmbed(files, config, false, true);
         embedDataInImage(ctx, fullData);
         if (!ImageIO.write(ctx.image, "png", new File(outputImagePath))) {
             throw new IOException("Failed to write image to " + outputImagePath);
@@ -729,7 +715,7 @@ public class Steganography {
 
         if (ctx.width * ctx.height < requiredPixels) {
             int minSide = (int) Math.ceil(Math.sqrt(requiredPixels));
-            throw new IllegalArgumentException("Image too small. Needs at least " + minSide + "x" + minSide + " pixels.");
+            throw new IllegalArgumentException(String.format("Image too small. Needs at least %dx%d pixels.", minSide, minSide));
         }
 
         ImageProcessor.embedBits(ctx.image, ctx.width, ctx.height, data, true, 0, ctx.bitsPerPixel);
@@ -786,7 +772,7 @@ public class Steganography {
             throw new IllegalStateException("No files embedded in the image.");
         }
         if (fileNumber < 1 || fileNumber > files.size()) {
-            throw new IllegalArgumentException("Invalid file number: " + fileNumber + ". Must be between 1 and " + files.size() + ".");
+            throw new IllegalArgumentException(String.format("Invalid file number: %d. Must be between 1 and %d.", fileNumber, files.size()));
         }
 
         String deletedFilename = files.get(fileNumber - 1).filename;
@@ -820,7 +806,7 @@ public class Steganography {
 
         boolean extractAll = fileNumber == null || fileNumber == 0;
         if (!extractAll && (fileNumber < 1 || fileNumber > files.size())) {
-            throw new IllegalArgumentException("Invalid file number: " + fileNumber + ". Must be 0 (all) or between 1 and " + files.size() + ".");
+            throw new IllegalArgumentException(String.format("Invalid file number: %d. Must be 0 (all) or between 1 and %d.", fileNumber, files.size()));
         }
 
         if (extractAll) {
@@ -905,7 +891,7 @@ public class Steganography {
                     }
                     config.bitsPerPixel = bitsOption == 1 ? 3 : 6;
                 } else if (args[i].equals("--force")) {
-                    config.force = true; // Set force flag
+                    config.force = true;
                 } else {
                     mainArgs.add(args[i]);
                 }
