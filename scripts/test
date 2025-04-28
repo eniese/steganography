@@ -67,10 +67,15 @@ steg list img2.png
 steg embed img2.png img2.png --password secret1 src/main/java/net/niese/java/steganography/Steganography.java
 steg embed img2.png img2.png 'target/classes/net/niese/java/steganography/Steganography$Utils.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class' 'target/classes/net/niese/java/steganography/Steganography$ExtractResult.class' 'target/classes/net/niese/java/steganography/Steganography$ImageContext.class' 'target/classes/net/niese/java/steganography/Steganography$DataProcessor.class' 'target/classes/net/niese/java/steganography/Steganography$SteganographyConfig.class' 'target/classes/net/niese/java/steganography/Steganography.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
 steg embed img2.png img2.png --password secret2 LICENSE
+steg embed img2.png img2.png --password secret1 src/main/java/net/niese/java/steganography/Steganography.java
+steg embed img2.png img2.png --password secret2 LICENSE
+steg embed img2.png img2.png 'target/classes/net/niese/java/steganography/Steganography$Utils.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class' 'target/classes/net/niese/java/steganography/Steganography$ExtractResult.class' 'target/classes/net/niese/java/steganography/Steganography$ImageContext.class' 'target/classes/net/niese/java/steganography/Steganography$DataProcessor.class' 'target/classes/net/niese/java/steganography/Steganography$SteganographyConfig.class' 'target/classes/net/niese/java/steganography/Steganography.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
+steg embed img2.png img2.png --password secret2 LICENSE
+steg embed img2.png img2.png --password secret1 LICENSE
 steg list img2.png
-steg list img2.png --password1 secret1 --password10 secret2
+steg list img2.png --password1 secret1 --password10 secret2 --password11 secret1 --password12 secret2 --password21 secret2 --password22 secret1
 rm -rf blah
-steg extract img2.png blah --password1 secret1 --password10 secret2
+steg extract img2.png blah --password1 secret1 --password10 secret2 --password11 secret1 --password12 secret2 --password21 secret2 --password22 secret1
 ls -la blah
 
 diff -s 'blah/Steganography.java' 'src/main/java/net/niese/java/steganography/Steganography.java'
@@ -83,6 +88,19 @@ diff -s 'blah/Steganography$SteganographyConfig.class' 'target/classes/net/niese
 diff -s 'blah/Steganography.class' 'target/classes/net/niese/java/steganography/Steganography.class'
 diff -s 'blah/Steganography$ImageProcessor.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
 diff -s 'blah/LICENSE' 'LICENSE'
+diff -s 'blah/Steganography-1.java' 'src/main/java/net/niese/java/steganography/Steganography.java'
+diff -s 'blah/LICENSE-1' 'LICENSE'
+diff -s 'blah/Steganography$Utils-1.class' 'target/classes/net/niese/java/steganography/Steganography$Utils.class'
+diff -s 'blah/Steganography$FileData-1.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class'
+diff -s 'blah/Steganography$ExtractResult-1.class' 'target/classes/net/niese/java/steganography/Steganography$ExtractResult.class'
+diff -s 'blah/Steganography$ImageContext-1.class' 'target/classes/net/niese/java/steganography/Steganography$ImageContext.class'
+diff -s 'blah/Steganography$DataProcessor-1.class' 'target/classes/net/niese/java/steganography/Steganography$DataProcessor.class'
+diff -s 'blah/Steganography$SteganographyConfig-1.class' 'target/classes/net/niese/java/steganography/Steganography$SteganographyConfig.class'
+diff -s 'blah/Steganography-1.class' 'target/classes/net/niese/java/steganography/Steganography.class'
+diff -s 'blah/Steganography$ImageProcessor-1.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
+diff -s 'blah/LICENSE-2' 'LICENSE'
+diff -s 'blah/LICENSE-3' 'LICENSE'
+
 
 steg list img2.png
 steg delete img2.png img2.png 3
@@ -90,7 +108,7 @@ steg delete img2.png img2.png 1
 steg list img2.png
 
 rm -rf blah
-steg extract img2.png blah --password secret2
+steg extract img2.png blah --password secret2 
 ls -la blah
 
 diff -s 'blah/Steganography$Utils.class' 'target/classes/net/niese/java/steganography/Steganography$Utils.class'
@@ -101,10 +119,28 @@ diff -s 'blah/Steganography$SteganographyConfig.class' 'target/classes/net/niese
 diff -s 'blah/Steganography.class' 'target/classes/net/niese/java/steganography/Steganography.class'
 diff -s 'blah/Steganography$ImageProcessor.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
 diff -s 'blah/LICENSE' 'LICENSE'
+diff -s 'blah/LICENSE-1' 'LICENSE'
+diff -s 'blah/Steganography$Utils-1.class' 'target/classes/net/niese/java/steganography/Steganography$Utils.class'
+diff -s 'blah/Steganography$FileData-1.class' 'target/classes/net/niese/java/steganography/Steganography$FileData.class'
+diff -s 'blah/Steganography$ExtractResult-1.class' 'target/classes/net/niese/java/steganography/Steganography$ExtractResult.class'
+diff -s 'blah/Steganography$ImageContext-1.class' 'target/classes/net/niese/java/steganography/Steganography$ImageContext.class'
+diff -s 'blah/Steganography$DataProcessor-1.class' 'target/classes/net/niese/java/steganography/Steganography$DataProcessor.class'
+diff -s 'blah/Steganography$SteganographyConfig-1.class' 'target/classes/net/niese/java/steganography/Steganography$SteganographyConfig.class'
+diff -s 'blah/Steganography-1.class' 'target/classes/net/niese/java/steganography/Steganography.class'
+diff -s 'blah/Steganography$ImageProcessor-1.class' 'target/classes/net/niese/java/steganography/Steganography$ImageProcessor.class'
+diff -s 'blah/LICENSE-2' 'LICENSE'
+
 
 # going to format the files again
+steg list img1.png
 steg format --bits 1 img1.png
+steg format --bits 1 --force img1.png
+steg list img1.png
+
+steg list img2.png
 steg format --bits 2 img2.png
+steg format --force img2.png
+steg list img2.png
 
 
 # cleanup

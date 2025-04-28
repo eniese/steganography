@@ -8,7 +8,6 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.zip.CRC32;
 import java.util.zip.GZIPInputStream;
@@ -42,7 +41,17 @@ public class Steganography {
         boolean silentExtract;
         boolean silentDecrypt;
         boolean noCRC;
+        boolean force; // Flag for --force option
         int bitsPerPixel = 6; // Default to 6 bits per pixel
+    }
+
+    /**
+     * Enum for reasons a file is skipped during extraction.
+     */
+    enum SkipReason {
+        NONE,
+        ENCRYPTED_NO_PASSWORD,
+        CORRUPTED
     }
 
     /**
@@ -56,6 +65,8 @@ public class Steganography {
         boolean isCompressed;
         boolean isEncrypted;
         int embeddedSize;
+        boolean isSkipped;
+        SkipReason skipReason;
 
         FileData(String filename, byte[] data, int crc, boolean isCompressed, boolean isEncrypted, int embeddedSize, byte[] embeddedData) {
             this.filename = filename;
@@ -65,6 +76,8 @@ public class Steganography {
             this.isCompressed = isCompressed;
             this.isEncrypted = isEncrypted;
             this.embeddedSize = embeddedSize;
+            this.isSkipped = false;
+            this.skipReason = SkipReason.NONE;
         }
 
         // Optimization: Clear data to reduce memory usage
@@ -105,7 +118,7 @@ public class Steganography {
      * Validates the magic header and sets bitsPerPixel in ImageContext.
      */
     private static void validateMagicHeader(ImageContext ctx) throws Exception {
-        // Restored: Try both 6 and 3 bits to ensure robustness
+        // Try both 6 and 3 bits to ensure robustness
         byte[] extractedMagic6 = new byte[4];
         byte[] extractedMagic3 = new byte[4];
         ctx.bitsPerPixel = 6;
@@ -145,6 +158,34 @@ public class Steganography {
     public static void formatData(String inputImagePath, String outputImagePath, SteganographyConfig config) throws Exception {
         Utils.validateImagePaths(inputImagePath, outputImagePath);
         ImageContext ctx = new ImageContext(inputImagePath);
+
+        // Check for magic header, trying 3 bits per pixel first
+        byte[] extractedMagic = new byte[4];
+        ctx.bitsPerPixel = 3; // Try 3 bits first
+        extractBits(ctx, extractedMagic, 0, 32);
+        boolean hasMagic = isValidMagic(extractedMagic) && (extractedMagic[3] & 0x01) == 0; // Check bit 0 = 0 for 3 bits
+
+        // If magic header not found with 3 bits, try 6 bits per pixel
+        if (!hasMagic) {
+            ctx.bitsPerPixel = 6; // Try 6 bits
+            Arrays.fill(extractedMagic, (byte) 0); // Clear previous attempt
+            extractBits(ctx, extractedMagic, 0, 32);
+            hasMagic = isValidMagic(extractedMagic) && (extractedMagic[3] & 0x01) == 1; // Check bit 0 = 1 for 6 bits
+        }
+
+        if (hasMagic) {
+            // Magic header found, bits per pixel is already set (3 or 6)
+            ctx.updateMaxBits();
+            byte[] numFilesBytes = new byte[1];
+            extractBits(ctx, numFilesBytes, 32, 8);
+            int numFiles = numFilesBytes[0] & 0xFF;
+
+            if (numFiles > 0 && !config.force) {
+                throw new IllegalStateException("Image already contains " + numFiles + " embedded file(s). Use --force to overwrite.");
+            }
+        }
+
+        // Proceed with formatting using user-specified bits per pixel
         ctx.bitsPerPixel = config.bitsPerPixel;
         ctx.updateMaxBits();
 
@@ -378,11 +419,12 @@ public class Steganography {
         }
 
         static String getUniqueFilename(String outputDir, String originalFilename) {
+            int dotIndex = originalFilename.lastIndexOf('.');
+            String baseName = dotIndex != -1 ? originalFilename.substring(0, dotIndex) : originalFilename;
+            String extension = dotIndex != -1 ? originalFilename.substring(dotIndex) : "";
             File file = new File(outputDir, originalFilename);
             if (!file.exists()) return originalFilename;
 
-            String baseName = originalFilename.substring(0, originalFilename.lastIndexOf('.'));
-            String extension = originalFilename.substring(originalFilename.lastIndexOf('.'));
             int suffix = 1;
             while (new File(outputDir, baseName + "-" + suffix + extension).exists()) {
                 suffix++;
@@ -492,8 +534,23 @@ public class Steganography {
 
                 byte[] embeddedData = Arrays.copyOf(data, data.length);
                 byte[] processedData = needData ? Arrays.copyOf(data, data.length) : new byte[0];
+                FileData file = new FileData(filename, processedData, storedCrc, isCompressed, isEncrypted, dataLength, embeddedData);
 
-                if (needData && isEncrypted) {
+                // Validate CRC
+                if (needData && DataProcessor.calculateCRC(embeddedData) != storedCrc) {
+                    if (isListing || config.skipCorrupted) {
+                        if (!config.silentExtract && !config.silentDecrypt) {
+                            System.err.println("Warning: CRC mismatch for file " + filename + ".");
+                        }
+                        file.isSkipped = true;
+                        file.skipReason = SkipReason.CORRUPTED;
+                        file.data = new byte[0];
+                    } else {
+                        throw new IllegalStateException("CRC mismatch for file " + filename);
+                    }
+                }
+
+                if (needData && isEncrypted && !file.isSkipped) {
                     String password = config.passwords.get(fileIdx + 1);
                     if (password == null) password = config.passwords.get(0);
                     if (password == null) {
@@ -501,23 +558,31 @@ public class Steganography {
                             !config.silentExtract && !config.silentDecrypt) {
                             System.err.println("Warning: File " + filename + " is encrypted, no password provided.");
                         }
-                        processedData = new byte[0];
+                        file.isSkipped = true;
+                        file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+                        file.data = new byte[0];
                     } else {
                         try {
-                            processedData = DataProcessor.decrypt(processedData, password);
+                            file.data = DataProcessor.decrypt(file.data, password);
                         } catch (Exception e) {
                             if (isListing) {
                                 if (!config.silentExtract && !config.silentDecrypt) {
                                     System.err.println("Warning: Decryption failed for file " + filename + ": " + e.getMessage());
                                 }
-                                processedData = new byte[0];
+                                file.isSkipped = true;
+                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+                                file.data = new byte[0];
                             } else if (config.silentDecrypt) {
-                                processedData = new byte[0];
+                                file.isSkipped = true;
+                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+                                file.data = new byte[0];
                             } else if (config.skipCorrupted) {
                                 if (!config.silentExtract) {
                                     System.err.println("Warning: Decryption failed for file " + filename + ".");
                                 }
-                                processedData = new byte[0];
+                                file.isSkipped = true;
+                                file.skipReason = SkipReason.ENCRYPTED_NO_PASSWORD;
+                                file.data = new byte[0];
                             } else {
                                 throw new IllegalStateException("Decryption failed for file " + filename + ": " + e.getMessage());
                             }
@@ -525,22 +590,24 @@ public class Steganography {
                     }
                 }
 
-                if (needData && isCompressed && processedData.length > 0) {
+                if (needData && isCompressed && !file.isSkipped && file.data.length > 0) {
                     try {
-                        processedData = DataProcessor.decompress(processedData);
+                        file.data = DataProcessor.decompress(file.data);
                     } catch (Exception e) {
                         if (isListing || config.skipCorrupted) {
                             if (!config.silentExtract && !config.silentDecrypt) {
                                 System.err.println("Warning: Decompression failed for file " + filename + ".");
                             }
-                            processedData = new byte[0];
+                            file.isSkipped = true;
+                            file.skipReason = SkipReason.CORRUPTED;
+                            file.data = new byte[0];
                         } else {
                             throw new IllegalStateException("Decompression failed for file " + filename + ": " + e.getMessage());
                         }
                     }
                 }
 
-                files.add(new FileData(filename, processedData, storedCrc, isCompressed, isEncrypted, dataLength, embeddedData));
+                files.add(file);
                 Arrays.fill(data, (byte) 0);
             } catch (Exception e) {
                 if (isListing || config.skipCorrupted) {
@@ -568,7 +635,7 @@ public class Steganography {
         return currentBitPosition;
     }
 
-    private static byte[] buildDataToEmbed(List<FileData> files, SteganographyConfig config, boolean isNewFile) throws Exception {
+    private static byte[] buildDataToEmbed(List<FileData> files, SteganographyConfig config, boolean isNewFile, boolean silent) throws Exception {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         byte[] magicHeader = Arrays.copyOf(MAGIC_STEG, 4);
         magicHeader[3] |= (config.bitsPerPixel == 6 ? 1 : 0);
@@ -615,15 +682,17 @@ public class Steganography {
             file.embeddedData = Arrays.copyOf(processedData, processedData.length);
             file.clearData(); // Optimization: Free raw data
 
-            System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, CRC=%08X%n",
-                    file.filename, isCompressed, isEncrypted, processedData.length, crc);
+            if (!silent) {
+                System.out.printf("Embedded file '%s': isCompressed=%b, isEncrypted=%b, size=%d, CRC=%08X%n",
+                        file.filename, isCompressed, isEncrypted, processedData.length, crc);
+            }
         }
 
         return baos.toByteArray();
     }
 
     private static void appendDataToImage(ImageContext ctx, byte[] existingData, List<FileData> newFiles, SteganographyConfig config) throws Exception {
-        byte[] newData = buildDataToEmbed(newFiles, config, true);
+        byte[] newData = buildDataToEmbed(newFiles, config, true, false);
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
         if (existingData.length == 0) {
@@ -642,7 +711,7 @@ public class Steganography {
 
     private static void rewriteImage(ImageContext ctx, String outputImagePath, List<FileData> files, SteganographyConfig config) throws Exception {
         config.bitsPerPixel = ctx.bitsPerPixel;
-        byte[] fullData = buildDataToEmbed(files, config, false);
+        byte[] fullData = buildDataToEmbed(files, config, false, true); // Silent for delete
         embedDataInImage(ctx, fullData);
         if (!ImageIO.write(ctx.image, "png", new File(outputImagePath))) {
             throw new IOException("Failed to write image to " + outputImagePath);
@@ -751,8 +820,10 @@ public class Steganography {
 
         if (extractAll) {
             for (FileData file : files) {
-                if (file.data.length == 0) {
-                    System.out.println("Skipped " + file.filename + " (encrypted or corrupted)");
+                if (file.isSkipped) {
+                    String reason = file.skipReason == SkipReason.ENCRYPTED_NO_PASSWORD ?
+                            "(encrypted, no valid password supplied)" : "(corrupted)";
+                    System.out.println("Skipped " + file.filename + " " + reason);
                     continue;
                 }
                 String uniqueFilename = Utils.getUniqueFilename(outputDir, file.filename);
@@ -764,8 +835,10 @@ public class Steganography {
             }
         } else {
             FileData file = files.get(fileNumber - 1);
-            if (file.data.length == 0) {
-                throw new IllegalStateException("Cannot extract " + file.filename + " (encrypted or corrupted)");
+            if (file.isSkipped) {
+                String reason = file.skipReason == SkipReason.ENCRYPTED_NO_PASSWORD ?
+                        "(encrypted, no valid password supplied)" : "(corrupted)";
+                throw new IllegalStateException("Cannot extract " + file.filename + " " + reason);
             }
             String uniqueFilename = Utils.getUniqueFilename(outputDir, file.filename);
             try (FileOutputStream fos = new FileOutputStream(new File(outputDir, uniqueFilename))) {
@@ -783,7 +856,7 @@ public class Steganography {
         System.out.println("  extract <input_image> <output_dir> [file_number] [--password[N] <password>] [--skip-corrupted]");
         System.out.println("  list <input_image> [--password[N] <password>] [--skip-corrupted] [--noCRC]");
         System.out.println("  delete <input_image> <output_image> <file_number>");
-        System.out.println("  format <input_image> [<output_image>] [--bits <1|2>]");
+        System.out.println("  format <input_image> [<output_image>] [--bits <1|2>] [--force]");
         System.out.println("  -h, --help");
         System.out.println("Options:");
         System.out.println("  --password[N] <password> - Encrypt/decrypt data for file N (or all if N is omitted).");
@@ -791,6 +864,7 @@ public class Steganography {
         System.out.println("  --skip-corrupted - Skip corrupted files during extraction or listing.");
         System.out.println("  --noCRC - Suppress hexadecimal CRC values in the list command.");
         System.out.println("  --bits <1|2> - Set bits per pixel for format (1=3 bits, 2=6 bits; default 2).");
+        System.out.println("  --force - Force formatting of an image that already contains embedded files.");
     }
 
     public static void main(String[] args) {
@@ -825,6 +899,8 @@ public class Steganography {
                         throw new IllegalArgumentException("--bits must be 1 (3 bits per pixel) or 2 (6 bits per pixel).");
                     }
                     config.bitsPerPixel = bitsOption == 1 ? 3 : 6;
+                } else if (args[i].equals("--force")) {
+                    config.force = true; // Set force flag
                 } else {
                     mainArgs.add(args[i]);
                 }
