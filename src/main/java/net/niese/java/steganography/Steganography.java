@@ -67,6 +67,7 @@ public class Steganography {
         int embeddedSize;
         boolean isSkipped;
         SkipReason skipReason;
+        boolean isCorrupted; // Tracks CRC mismatch
 
         FileData(String filename, byte[] data, int crc, boolean isCompressed, boolean isEncrypted, int embeddedSize, byte[] embeddedData) {
             this.filename = filename;
@@ -78,6 +79,7 @@ public class Steganography {
             this.embeddedSize = embeddedSize;
             this.isSkipped = false;
             this.skipReason = SkipReason.NONE;
+            this.isCorrupted = false;
         }
 
         // Optimization: Clear data to reduce memory usage
@@ -227,7 +229,7 @@ public class Steganography {
             for (int fileIdx = 1; fileIdx <= numFiles; fileIdx++) {
                 FileData file = files.get(fileIdx - 1);
                 totalBitsUsed += (1 + file.filename.length() + 1 + 4 + 4 + file.embeddedSize) * 8;
-                String crcStatus = DataProcessor.calculateCRC(file.embeddedData) == file.crc ? "OK" : "ERR";
+                String crcStatus = file.isCorrupted ? "ERR" : "OK";
                 String crcDisplay = config.noCRC ? crcStatus : String.format("%08X %s", file.crc, crcStatus);
                 String fileSize = (file.data.length == 0 && file.isEncrypted) ? "<unknown>" : String.valueOf(file.data.length);
                 System.out.printf("%3d " + crcHeaderFormat + " %8d %1s %1s %9s %s\n",
@@ -537,16 +539,19 @@ public class Steganography {
                 FileData file = new FileData(filename, processedData, storedCrc, isCompressed, isEncrypted, dataLength, embeddedData);
 
                 // Validate CRC
-                if (needData && DataProcessor.calculateCRC(embeddedData) != storedCrc) {
-                    if (isListing || config.skipCorrupted) {
-                        if (!config.silentExtract && !config.silentDecrypt) {
-                            System.err.println("Warning: CRC mismatch for file " + filename + ".");
+                if (needData) {
+                    file.isCorrupted = DataProcessor.calculateCRC(embeddedData) != storedCrc;
+                    if (file.isCorrupted) {
+                        if (isListing || config.skipCorrupted) {
+                            if (!config.silentExtract && !config.silentDecrypt) {
+                                System.err.println("Warning: CRC mismatch for file " + filename + ".");
+                            }
+                            file.isSkipped = true;
+                            file.skipReason = SkipReason.CORRUPTED;
+                            file.data = new byte[0];
+                        } else {
+                            throw new IllegalStateException("CRC mismatch for file " + filename);
                         }
-                        file.isSkipped = true;
-                        file.skipReason = SkipReason.CORRUPTED;
-                        file.data = new byte[0];
-                    } else {
-                        throw new IllegalStateException("CRC mismatch for file " + filename);
                     }
                 }
 
